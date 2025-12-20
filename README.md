@@ -1,5 +1,14 @@
 # UniCompare
 
+```
+   __  __      _ ______
+  / / / /___  (_) ____/___  ____ ___  ____  ____ _________
+ / / / / __ \/ / /   / __ \/ __ `__ \/ __ \/ __ `/ ___/ _ \
+/ /_/ / / / / / /___/ /_/ / / / / / / /_/ / /_/ / /  /  __/
+\____/_/ /_/_/\____/\____/_/ /_/ /_/ .___/\__,_/_/   \___/
+                                  /_/
+```
+
 A simple program to help university students manage their coursework. Given 2 executable files, it will run them and compare their outputs with the given input file/s.
 
 ## Features
