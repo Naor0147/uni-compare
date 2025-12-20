@@ -2,8 +2,6 @@
 
 A simple program to help university students manage their coursework. Given 2 executable files, it will run them and compare their outputs with the given input file/s.
 
-![UniCompare Banner](https://via.placeholder.com/800x200/2E86AB/FFFFFF?text=UniCompare)
-
 ## Features
 
 - ✅ Compare outputs of two executable programs
