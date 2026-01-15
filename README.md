@@ -172,6 +172,16 @@ Results saved in uniTestResults/ folder
 
 ---
 
+### 🚦 Status Legend
+
+| Icon | Status | Description |
+| :---: | --- | --- |
+| `[✓]` | **PASS** | Output matches exactly between both programs. |
+| `[✗]` | **FAIL** | Output mismatch. Diff saved to results folder. |
+| `[M]` | **LEAK** | Output matched, but Valgrind detected memory errors. |
+| `[T]` | **TIMEOUT** | Program took longer than the configured limit (killed). |
+
+---
 ## 📂 File Structure
 
 When a test fails, results are organized automatically:
@@ -191,15 +201,7 @@ uniTestResults/
 
 ## 👥 Authors
 
-* **Naor Biton**
 * **Denis Irkl**
+* **Naor Biton**
 
 ---
-
-<div align="center">
-<i>Made for university students who need to compare program outputs efficiently.</i>
-</div>
-
-```
-
-```
