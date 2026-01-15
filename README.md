@@ -17,8 +17,10 @@ A simple program to help university students manage their coursework. Given 2 ex
 - 📁 Recursive directory traversal with configurable depth (default: 5 levels)
 - 🔍 Smart duplicate file handling with indexed naming
 - 🔄 Cross-platform support (Windows/Linux)
+- ⏱️ Configurable timeout for tests (default: 5s)
 - 🎨 Colorized output with status indicators
 - 📊 Integration with Beyond Compare for visual diff
+- 🧠 Memory leak detection using Valgrind
 - 💾 Automatic result saving for mismatched outputs
 
 ## Installation
@@ -36,12 +38,18 @@ For visual diff functionality, install Beyond Compare:
 - Will be automatically installed when first needed
 - Or manually: `sudo apt install bcompare`
 
+### Valgrind (Optional)
+
+For memory leak detection:
+- **Linux:** `sudo apt install valgrind`
+- **Windows:** Requires WSL (Windows Subsystem for Linux)
+
 ## Usage
 
 ### Basic Syntax
 
 ```bash
-unic <executable1> <executable2> --files <input_files...> [--max-depth <depth>]
+unic <executable1> <executable2> --files <input_files...> [--max-depth <depth>] [--timeout <seconds>] [--valgrind]
 ```
 
 ### Examples
@@ -242,7 +250,7 @@ If Beyond Compare isn't found:
 - Path normalization for consistent results display
 
 ## Authors
-
+Naor Biton (5'7 160lbs lean 12% bf)
 Denis Irkl (6'1 180lbs lean btw)
 Claude Sonnet 4 & Github Copilot Pro ❤️
 

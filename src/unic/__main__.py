@@ -3,19 +3,22 @@ import os
 import platform
 import subprocess
 import sys
+import shlex  # Used to split command strings into args
+import re     # Used for parsing Valgrind output
 from pathlib import Path
 
 from colorama import Fore, Style, init
 from pyfiglet import Figlet
 
+# Initialize colorama
 init(autoreset=True)
 
 parser = argparse.ArgumentParser(
     description="A simple program to help university students manage their coursework. Given 2 executable files, it will run them and compare their outputs with the given input file/s."
 )
 
-parser.add_argument("exec1", help="Path to the first executable file.")
-parser.add_argument("exec2", help="Path to the second executable file.")
+parser.add_argument("exec1", help="Path to the first executable file (can include args in quotes, e.g. './prog 10').")
+parser.add_argument("exec2", help="Path to the second executable file (can include args in quotes).")
 parser.add_argument(
     "--files",
     "-f",
@@ -30,13 +33,97 @@ parser.add_argument(
     default=5,
     help="Maximum directory depth for recursive search (default: 5)",
 )
-#check
-def process_file(input_file, exec1, exec2, display_name=None):
-    # Convert to absolute paths
-    exec1_path = os.path.abspath(exec1)
-    exec2_path = os.path.abspath(exec2)
+parser.add_argument(
+    "--output",
+    "-o",
+    type=str,
+    default="uniTestResults",
+    help="Directory to save results (default: uniTestResults)",
+)
+parser.add_argument(
+    "--valgrind",
+    "-v",
+    action="store_true",
+    help="Run executables with Valgrind to check for memory leaks/errors.",
+)
+parser.add_argument(
+    "--timeout",
+    "-t",
+    type=float,
+    default=5.0,
+    help="Timeout in seconds for each test execution (default: 5.0)",
+)
 
-    # Use display_name if provided, otherwise use input_file
+def get_safe_results_path(input_file, base_output_dir):
+    """
+    Generates a safe relative path for saving results to avoid [Errno 17].
+    Converts absolute paths to relative structure.
+    """
+    # Normalize path and handle drive letters
+    abs_path = os.path.abspath(input_file)
+    drive, path_no_drive = os.path.splitdrive(abs_path)
+    
+    # Remove leading separator to ensure os.path.join treats it as relative
+    rel_path = path_no_drive.lstrip(os.sep)
+    
+    # If there was a drive letter (Windows), add it as a folder
+    if drive:
+        rel_path = os.path.join(drive.replace(":", ""), rel_path)
+        
+    return os.path.join(base_output_dir, rel_path)
+
+def check_valgrind_errors(stderr_output):
+    """
+    Parses Valgrind stderr output to determine if there were memory errors.
+    Returns True if errors/leaks were found.
+    """
+    if not stderr_output:
+        return False
+    
+    # Look for the error summary line
+    # Example: "ERROR SUMMARY: 0 errors from 0 contexts"
+    match = re.search(r"ERROR SUMMARY: (\d+) errors", stderr_output)
+    if match:
+        error_count = int(match.group(1))
+        if error_count > 0:
+            return True
+            
+    # Also check for "definitely lost" bytes just in case
+    if "definitely lost: 0 bytes" not in stderr_output and "definitely lost:" in stderr_output:
+         return True
+         
+    return False
+
+def process_file(input_file, exec1_cmd, exec2_cmd, display_name=None, use_valgrind=False, timeout=5.0):
+    """
+    Runs both programs with the given input file and compares their output.
+    Also runs Valgrind if requested.
+    """
+    
+    # Parse the command strings into executable and arguments
+    try:
+        exec1_parts = shlex.split(exec1_cmd)
+        exec2_parts = shlex.split(exec2_cmd)
+    except Exception as e:
+        print(f"{Fore.RED}Error parsing command arguments: {e}{Style.RESET_ALL}")
+        return False, None
+
+    # Get absolute paths for the executables
+    exec1_path = os.path.abspath(exec1_parts[0])
+    exec2_path = os.path.abspath(exec2_parts[0])
+
+    # Construct the final command lists
+    cmd1 = [exec1_path] + exec1_parts[1:]
+    cmd2 = [exec2_path] + exec2_parts[1:]
+
+    # Add Valgrind wrapper if requested
+    if use_valgrind:
+        # --leak-check=full: detailed leak report
+        # --quiet: suppress verbose text (only show errors)
+        valgrind_prefix = ["valgrind", "--leak-check=full", "--quiet"]
+        cmd1 = valgrind_prefix + cmd1
+        cmd2 = valgrind_prefix + cmd2
+
     display_text = display_name if display_name else input_file
 
     # Read input file
@@ -47,57 +134,110 @@ def process_file(input_file, exec1, exec2, display_name=None):
         print(
             f"{Fore.RED}Error reading input file {display_text}: {e}{Style.RESET_ALL}"
         )
-        return False, "", ""
+        return False, None
 
-    # Run executables with subprocess for proper cross-platform handling
+    # Run executables
     try:
         proc1 = subprocess.Popen(
-            [exec1_path],
+            cmd1,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
         )
-        output1, _ = proc1.communicate(input=input_data)
+        try:
+            output1, stderr1 = proc1.communicate(input=input_data, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc1.kill()
+            print(f"{Fore.YELLOW}[T] {display_text} (Timeout){Style.RESET_ALL}")
+            return False, None
 
         proc2 = subprocess.Popen(
-            [exec2_path],
+            cmd2,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
         )
-        output2, _ = proc2.communicate(input=input_data)
+        try:
+            output2, stderr2 = proc2.communicate(input=input_data, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc2.kill()
+            print(f"{Fore.YELLOW}[T] {display_text} (Timeout){Style.RESET_ALL}")
+            return False, None
+
+    except FileNotFoundError:
+        if use_valgrind:
+             print(f"{Fore.RED}Error: 'valgrind' not found. Please install it or remove the --valgrind flag.{Style.RESET_ALL}")
+        else:
+             print(f"{Fore.RED}Error running executables. Check paths.{Style.RESET_ALL}")
+        return False, None
     except Exception as e:
         print(f"{Fore.RED}Error running executables: {e}{Style.RESET_ALL}")
-        return False, "", ""
+        return False, None
 
-    if output1 == output2:
-        print(f"{Fore.GREEN}[✓] {display_text}{Style.RESET_ALL}")
-        return True
-    else:
-        print(f"{Fore.RED}[✗] {display_text}{Style.RESET_ALL}")
-        return False, output1, output2
+    # Result Data Structure
+    result_data = {
+        "output1": output1,
+        "output2": output2,
+        "stderr1": stderr1 if use_valgrind else None,
+        "stderr2": stderr2 if use_valgrind else None,
+        "valgrind_error1": check_valgrind_errors(stderr1) if use_valgrind else False,
+        "valgrind_error2": check_valgrind_errors(stderr2) if use_valgrind else False
+    }
+
+    # Logic for Success/Failure
+    
+    # 1. Output Mismatch
+    if output1 != output2:
+        print(f"{Fore.RED}[✗] {display_text} (Output Mismatch){Style.RESET_ALL}")
+        return False, result_data
+
+    # 2. Valgrind Memory Errors (only if enabled)
+    if use_valgrind:
+        if result_data["valgrind_error1"] or result_data["valgrind_error2"]:
+            print(f"{Fore.MAGENTA}[M] {display_text} (Memory Error){Style.RESET_ALL}")
+            if result_data["valgrind_error1"]:
+                 print(f"    {Fore.MAGENTA}↳ Memory leaks in Exec 1{Style.RESET_ALL}")
+            if result_data["valgrind_error2"]:
+                 print(f"    {Fore.MAGENTA}↳ Memory leaks in Exec 2{Style.RESET_ALL}")
+            return False, result_data
+
+    # 3. Success
+    print(f"{Fore.GREEN}[✓] {display_text}{Style.RESET_ALL}")
+    return True, result_data
 
 
-def save_mismatched_outputs(input_file, output1, output2, exec1, exec2):
-    """Save outputs for mismatched files to results folder."""
+def save_mismatched_outputs(input_file, result_data, exec1_cmd, exec2_cmd, base_output_dir):
+    """Save outputs (and Valgrind logs) for failed tests."""
     try:
-        # Create a unique results folder using relative path (replace separators to avoid nested folders)
-        rel_path = os.path.normpath(input_file).replace("\\", "/").replace(":", "")
-        results_dir = os.path.join("results", rel_path)
+        results_dir = get_safe_results_path(input_file, base_output_dir)
         Path(results_dir).mkdir(parents=True, exist_ok=True)
 
-        # Get executable names without path
-        exec1_name = os.path.basename(exec1).replace(".exe", "") + ".txt"
-        exec2_name = os.path.basename(exec2).replace(".exe", "") + ".txt"
+        def clean_filename(cmd_str):
+            name = os.path.basename(cmd_str)
+            name = name.replace(".exe", "")
+            return "".join(c if c.isalnum() or c in " .-_" else "_" for c in name)
 
-        # Save outputs
-        with open(os.path.join(results_dir, exec1_name), "w") as f:
-            f.write(output1)
+        exec1_name = clean_filename(exec1_cmd)
+        exec2_name = clean_filename(exec2_cmd)
 
-        with open(os.path.join(results_dir, exec2_name), "w") as f:
-            f.write(output2)
+        # Save Standard Outputs
+        with open(os.path.join(results_dir, f"{exec1_name}_output.txt"), "w") as f:
+            f.write(result_data["output1"])
+
+        with open(os.path.join(results_dir, f"{exec2_name}_output.txt"), "w") as f:
+            f.write(result_data["output2"])
+
+        # Save Valgrind Logs if they exist
+        if result_data["stderr1"]:
+            with open(os.path.join(results_dir, f"{exec1_name}_valgrind.txt"), "w") as f:
+                f.write(result_data["stderr1"])
+        
+        if result_data["stderr2"]:
+            with open(os.path.join(results_dir, f"{exec2_name}_valgrind.txt"), "w") as f:
+                f.write(result_data["stderr2"])
+
     except IOError as e:
         print(f"{Fore.RED}Error saving results for {input_file}: {e}{Style.RESET_ALL}")
 
@@ -108,23 +248,10 @@ def handle_windows_beyond_compare():
 
     if os.path.exists(default_path):
         print(f"{Fore.GREEN}Found Beyond Compare at default location.{Style.RESET_ALL}")
-        # Add to PATH
         os.environ["PATH"] += f";{os.path.dirname(default_path)}"
         return True
     else:
-        print(
-            f"{Fore.YELLOW}Beyond Compare not found at default location.{Style.RESET_ALL}"
-        )
-        print(f"{Fore.CYAN}To fix this, please:")
-        print(
-            f"1. Install Beyond Compare from: https://www.scootersoftware.com/download.php{Style.RESET_ALL}"
-        )
-        print(
-            f"{Fore.CYAN}2. The default installation path is: C:\\Program Files\\Beyond Compare 4{Style.RESET_ALL}"
-        )
-        print(
-            f"{Fore.CYAN}3. Or add Beyond Compare to your system PATH environment variable.{Style.RESET_ALL}"
-        )
+        print(f"{Fore.YELLOW}Beyond Compare not found at default location.{Style.RESET_ALL}")
         return False
 
 
@@ -160,14 +287,18 @@ def open_in_beyond_compare(results_dir):
     exec1_file = None
     exec2_file = None
 
-    # Find the two output files
-    for file in os.listdir(results_dir):
-        if file.endswith(".txt"):
-            if exec1_file is None:
-                exec1_file = os.path.join(results_dir, file)
-            else:
-                exec2_file = os.path.join(results_dir, file)
-                break
+    # Find the two output files (ending in _output.txt)
+    try:
+        for file in os.listdir(results_dir):
+            if file.endswith("_output.txt"):
+                if exec1_file is None:
+                    exec1_file = os.path.join(results_dir, file)
+                else:
+                    exec2_file = os.path.join(results_dir, file)
+                    break
+    except FileNotFoundError:
+         print(f"{Fore.RED}Error: Results directory not found: {results_dir}{Style.RESET_ALL}")
+         return
 
     if not exec1_file or not exec2_file:
         print(
@@ -188,29 +319,19 @@ def open_in_beyond_compare(results_dir):
             f"{Fore.YELLOW}Beyond Compare not found. Attempting to set up Beyond Compare...{Style.RESET_ALL}"
         )
 
-        # Attempt OS-specific installation/setup
         if platform.system() == "Windows":
             setup_success = handle_windows_beyond_compare()
         else:
             setup_success = handle_linux_beyond_compare()
 
         if setup_success:
-            # Retry opening Beyond Compare
-            print(f"{Fore.CYAN}Retrying to open Beyond Compare...{Style.RESET_ALL}")
             try:
                 subprocess.Popen(cmd)
-                print(f"{Fore.GREEN}Opening Beyond Compare...{Style.RESET_ALL}")
             except FileNotFoundError:
-                print(
-                    f"{Fore.RED}Failed to open Beyond Compare even after setup. Please install it manually and try again.{Style.RESET_ALL}"
-                )
-                print(f"{Fore.RED}Program will now exit.{Style.RESET_ALL}")
+                print(f"{Fore.RED}Failed to open Beyond Compare.{Style.RESET_ALL}")
                 sys.exit(1)
         else:
-            print(
-                f"{Fore.RED}Failed to set up Beyond Compare. Please install it manually and try again.{Style.RESET_ALL}"
-            )
-            print(f"{Fore.RED}Program will now exit.{Style.RESET_ALL}")
+            print(f"{Fore.RED}Failed to set up Beyond Compare.{Style.RESET_ALL}")
             sys.exit(1)
 
 
@@ -236,35 +357,30 @@ def get_txt_files_recursive(directory, max_depth=5):
     return txt_files
 
 
-def interactive_compare_loop(mismatched_files):
+def interactive_compare_loop(mismatched_files, base_output_dir):
     """Interactive loop to view mismatches in Beyond Compare."""
-    # Build a mapping of display names (with numbers) to results paths
     basename_count = {}
-    file_mapping = {}  # maps display name (e.g., "a.txt[1]") to results path
+    file_mapping = {}
 
     for full_path in mismatched_files:
         basename = os.path.basename(full_path)
-
-        # Count occurrences of each basename
         if basename not in basename_count:
             basename_count[basename] = 0
         basename_count[basename] += 1
 
-    # Create display names with numbers for duplicates
     basename_seen = {}
     for full_path in mismatched_files:
         basename = os.path.basename(full_path)
-        rel_path = os.path.normpath(full_path).replace("\\", "/").replace(":", "")
-        results_path = os.path.join("results", rel_path)
+        
+        # Use the same safe path logic for retrieval
+        results_path = get_safe_results_path(full_path, base_output_dir)
 
         if basename_count[basename] > 1:
-            # Multiple files with same name, add number
             if basename not in basename_seen:
                 basename_seen[basename] = 0
             basename_seen[basename] += 1
             display_name = f"{basename}[{basename_seen[basename]}]"
         else:
-            # Unique name, no number needed
             display_name = basename
 
         file_mapping[display_name] = results_path
@@ -283,14 +399,10 @@ def interactive_compare_loop(mismatched_files):
                 break
 
             if not user_input:
-                print(f"{Fore.YELLOW}Please enter a valid filename.{Style.RESET_ALL}")
                 continue
 
-            # Check if the file exists in mapping
             if user_input not in file_mapping:
-                print(
-                    f"{Fore.RED}Error: '{user_input}' not found in results.{Style.RESET_ALL}"
-                )
+                print(f"{Fore.RED}Error: '{user_input}' not found.{Style.RESET_ALL}")
                 print(f"{Fore.YELLOW}Available files:{Style.RESET_ALL}")
                 for display_name in sorted(file_mapping.keys()):
                     print(f"  - {display_name}")
@@ -312,17 +424,23 @@ def main():
     exec2 = args.exec2
     input_files = args.files
     max_depth = args.max_depth
+    output_dir = args.output
+    use_valgrind = args.valgrind
+    timeout = args.timeout
 
     has_output_mismatches = False
     mismatched_files = []
 
-    # Display ASCII art banner
     fig = Figlet(font="slant")
     banner = fig.renderText("UniCompare")
     print(f"\n{Fore.CYAN}{Style.BRIGHT}{banner}{Style.RESET_ALL}")
 
     description = "A simple program to help university students manage their coursework.\nGiven 2 executable files, it will run them and compare their outputs with the given input file/s."
     print(f"{Fore.YELLOW}{description}{Style.RESET_ALL}")
+    
+    if use_valgrind:
+        print(f"{Fore.MAGENTA}Memory Check Mode (Valgrind) Enabled{Style.RESET_ALL}")
+    
     print(f"{Fore.MAGENTA}Author: Denis Irkl (6'1 180lbs lean){Style.RESET_ALL}\n")
 
     print(f"\n{Style.BRIGHT}{'=' * 60}{Style.RESET_ALL}")
@@ -331,7 +449,6 @@ def main():
     )
     print(f"{Style.BRIGHT}{'=' * 60}{Style.RESET_ALL}\n")
 
-    # First pass: collect all files and build basename count
     all_files = []
     basename_count = {}
 
@@ -345,12 +462,10 @@ def main():
         else:
             all_files.append(input_file)
 
-    # Count how many files share the same basename
     for file_path in all_files:
         basename = os.path.basename(file_path)
         basename_count[basename] = basename_count.get(basename, 0) + 1
 
-    # Second pass: process files with correct display names
     basename_indices = {}
 
     for input_file in input_files:
@@ -360,56 +475,38 @@ def main():
             )
             continue
 
+        files_to_process = []
         if os.path.isdir(input_file):
-            txt_files = get_txt_files_recursive(input_file, max_depth)
-            for txt_file in txt_files:
-                basename = os.path.basename(txt_file)
-
-                # Calculate index for this file
-                if basename not in basename_indices:
-                    basename_indices[basename] = 0
-                basename_indices[basename] += 1
-
-                # Build display name
-                if basename_count[basename] > 1:
-                    display_name = f"{txt_file}[{basename_indices[basename]}]"
-                else:
-                    display_name = txt_file
-
-                result = process_file(txt_file, exec1, exec2, display_name)
-                if result is not True:
-                    has_output_mismatches = True
-                    _, output1, output2 = result
-                    save_mismatched_outputs(txt_file, output1, output2, exec1, exec2)
-                    mismatched_files.append(txt_file)
-
+            files_to_process = get_txt_files_recursive(input_file, max_depth)
         else:
-            basename = os.path.basename(input_file)
+            files_to_process = [input_file]
 
-            # Calculate index for this file
+        for file_path in files_to_process:
+            basename = os.path.basename(file_path)
+            
             if basename not in basename_indices:
                 basename_indices[basename] = 0
             basename_indices[basename] += 1
 
-            # Build display name
             if basename_count[basename] > 1:
-                display_name = f"{input_file}[{basename_indices[basename]}]"
+                display_name = f"{file_path}[{basename_indices[basename]}]"
             else:
-                display_name = input_file
+                display_name = file_path
 
-            result = process_file(input_file, exec1, exec2, display_name)
-            if result is not True:
-                has_output_mismatches = True
-                _, output1, output2 = result
-                save_mismatched_outputs(input_file, output1, output2, exec1, exec2)
-                mismatched_files.append(input_file)
+            success, result_data = process_file(file_path, exec1, exec2, display_name, use_valgrind, timeout)
+            
+            if not success:
+                if result_data is not None:
+                    has_output_mismatches = True
+                    save_mismatched_outputs(file_path, result_data, exec1, exec2, output_dir)
+                    mismatched_files.append(file_path)
 
     print(f"\n{Style.BRIGHT}{'=' * 60}{Style.RESET_ALL}")
 
     if has_output_mismatches:
-        print(f"{Fore.YELLOW}Results saved in results/ folder{Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}Results saved in {output_dir}/ folder{Style.RESET_ALL}")
         print(f"{Style.BRIGHT}{'=' * 60}{Style.RESET_ALL}")
-        interactive_compare_loop(mismatched_files)
+        interactive_compare_loop(mismatched_files, output_dir)
     else:
         print(f"{Fore.GREEN}All tests passed! No mismatches found.{Style.RESET_ALL}")
         print(f"{Style.BRIGHT}{'=' * 60}{Style.RESET_ALL}")
